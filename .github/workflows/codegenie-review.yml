@@ -1,8 +1,15 @@
 name: codegenie-review
 
-# Comment-triggered review. The workflow file must exist on the default branch
-# for issue_comment events to fire.
+# Two trigger lanes, one workflow:
+#   - automatic: every same-repo PR is reviewed on open, push, and when a
+#     draft is marked ready. Fork PRs get no secrets on pull_request, so
+#     the job skips them; they use the comment lane instead.
+#   - on demand: a collaborator comments "codegenie review" on a PR. The
+#     workflow file must exist on the default branch for issue_comment
+#     events to fire.
 on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
   issue_comment:
     types: [created]
 
@@ -12,12 +19,22 @@ permissions:
   issues: write
 
 concurrency:
-  group: codegenie-review-${{ github.event.issue.number }}
+  group: codegenie-review-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
   review:
-    if: ${{ github.event.issue.pull_request }}
+    # Comment lane: any comment on a PR (codegenie matches the trigger phrase
+    # and checks permissions itself). Automatic lane: same-repo, non-draft
+    # PRs only — a fork PR has no secrets here, so the app-token step would
+    # fail rather than skip.
+    if: >-
+      ${{
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.head.repo.full_name == github.repository &&
+         !github.event.pull_request.draft)
+      }}
     runs-on: ubuntu-latest
     env:
       # User-level codegenie home. On GitHub-hosted runners there is no custom
@@ -93,7 +110,7 @@ jobs:
           set -e
           npx -y @0xsequence/codegenie github-action \
             --trigger-phrase "codegenie review" \
-            --on-pull-request false \
+            --on-pull-request true \
             --model "${MODEL_SPEC:-openrouter/z-ai/glm-5.3-flash}" \
             --post-inline-comments true \
             --allowed-users "${ROSTER}"
@@ -110,7 +127,7 @@ jobs:
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         run: |
           set -euo pipefail
           export GH_TOKEN="$APP_TOKEN"
